@@ -1,0 +1,12 @@
+# === Core dependencies ===
+python-telegram-bot==20.8
+requests==2.32.3
+
+# === Async runtime (opsional, tapi disarankan untuk stabilitas asyncio) ===
+aiohttp==3.10.10
+
+# === Utility (datetime, timezone handling, dsb) ===
+pytz==2024.2
+
+# === Logging & debugging (optional tapi membantu saat di Render) ===
+rich==13.9.2
