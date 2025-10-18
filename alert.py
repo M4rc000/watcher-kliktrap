@@ -194,8 +194,6 @@ async def handle_updates(bot: Bot):
                             parse_mode="MarkdownV2"
                         )
 
-                        print(f"[{get_jakarta_time()}] New user registered: {full_name} ({username}) | Chat ID: {chat_id}")
-
                     else:
                         await bot.send_message(
                             chat_id=chat_id,
