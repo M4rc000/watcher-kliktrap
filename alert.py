@@ -15,6 +15,7 @@ REGISTERED_PICS_FILE = 'registered_pics.json'
 # --- Global ---
 registered_pics_ids = []
 last_update_id = None
+last_api_state = None  # None = belum tahu, "UP" atau "DOWN"
 
 
 # --- Utilitas Waktu ---
@@ -73,59 +74,77 @@ async def send_alert_to_pics(bot: Bot, message: str):
 
 # --- Cek API ---
 async def check_api_status(bot: Bot):
+    global last_api_state
     escaped_url = escape_markdown_v2(API_TO_MONITOR_URL)
-    print(f"[{get_jakarta_time()}] [APICheckLoop] Checking API {API_TO_MONITOR_URL}...")
+    now = get_jakarta_time()
+
+    print(f"[{now}] [APICheckLoop] Checking API {API_TO_MONITOR_URL}...")
+
+    current_state = "UP"
+    reason = "Service normal"
 
     try:
         response = requests.get(API_TO_MONITOR_URL, timeout=5)
         code = response.status_code
 
-        if code == 200:
-            print(f"[{get_jakarta_time()}] ✅ API OK (200).")
-            return
-
-        elif code == 503:
-            message = (
-                f"🚨 *ALERT:* Service di `{escaped_url}` *berhenti* \\(status *503 Service Unavailable*\\)\\. "
-                f"Periksa proses backend segera\\."
-            )
-
-        elif code == 404:
-            message = (
-                f"🔴 *ALERT:* API di `{escaped_url}` *tidak ditemukan* "
-                f"\\(status *404 Not Found*\\)\\. Kemungkinan besar *VM mati atau domain tidak resolve*\\."
-            )
-
-        else:
-            message = (
-                f"⚠️ *ALERT:* API di `{escaped_url}` mengembalikan *status code {code}*\\."
-                f" Perlu pengecekan manual\\."
-            )
-
-        await send_alert_to_pics(bot, message)
-        print(f"[{get_jakarta_time()}] Alert sent for status {code}")
-
+        if code != 200:
+            current_state = "DOWN"
+            if code == 503:
+                reason = f"Service not running \\(status *503 Service Unavailable*\\)"
+            elif code == 404:
+                reason = f"VM Offline \\(status *404 Not Found*\\)"
+            else:
+                reason = f"Unknown: *{code}*"
     except requests.exceptions.ConnectionError:
-        message = (
-            f"🔴 *ALERT:* `{escaped_url}` *tidak bisa diakses*\\. "
-            f"Ini bisa berarti *VM mati* atau *koneksi jaringan terputus*\\."
-        )
-        await send_alert_to_pics(bot, message)
-        print(f"[{get_jakarta_time()}] Connection error alert sent.")
-
+        current_state = "DOWN"
+        reason = "Can't accessed \\(Possible Offline VM\\)"
     except requests.exceptions.Timeout:
+        current_state = "DOWN"
+        reason = "Timeout — server is not reponded"
+    except Exception as e:
+        current_state = "DOWN"
+        reason = f"Error tak terduga: `{escape_markdown_v2(str(e))}`"
+
+    # --- Logika anti-spam: hanya kirim saat status BERUBAH ---
+    if last_api_state is None:
+        # Pertama kali bot dijalankan
+        last_api_state = current_state
         message = (
-            f"⚠️ *ALERT:* `{escaped_url}` *timeout*\\. "
-            f"Server hidup tapi *tidak merespons dalam waktu normal*\\."
+            f"🟢 *AwarenixBot Active*\n\n"
+            f"📡 URL: `{escaped_url}`\n\n"
+            f"📅 Time: *{now}*\n\n"
+            f"📈 Early Status: *{reason}*"
         )
         await send_alert_to_pics(bot, message)
-        print(f"[{get_jakarta_time()}] Timeout alert sent.")
 
-    except Exception as e:
-        escaped_error = escape_markdown_v2(str(e))
-        message = f"🚨 *ALERT:* Error tidak terduga saat cek `{escaped_url}`: `{escaped_error}`"
+    elif last_api_state == "UP" and current_state == "DOWN":
+        # Service baru saja down
+        message = (
+            f"🚨 *ALERT: SERVICE DOWN*\n\n"
+            f"📡 URL: `{escaped_url}`\n\n"
+            f"📅 Time: *{now}*\n\n"
+            f"💥 Condition: *{reason}*\n\n"
+            f"⚠️ Please check the server or vm."
+        )
         await send_alert_to_pics(bot, message)
-        print(f"[{get_jakarta_time()}] Unexpected error: {e}")
+        last_api_state = "DOWN"
+
+    elif last_api_state == "DOWN" and current_state == "UP":
+        # Service baru pulih
+        message = (
+            f"✅ *SERVICE RUNNING*\n\n"
+            f"📡 URL: `{escaped_url}`\n\n"
+            f"📅 Time: *{now}*\n\n"
+            f"💚 Condition: *{reason}*\n\n"
+            f"System is running well."
+        )
+        await send_alert_to_pics(bot, message)
+        last_api_state = "UP"
+
+    else:
+        # Tidak ada perubahan status
+        print(f"[{now}] No state change ({current_state}), skip alert.")
+        last_api_state = current_state
 
 
 # --- Handle Telegram Commands ---
@@ -145,6 +164,12 @@ async def handle_updates(bot: Bot):
                 chat_id = update.message.chat.id
 
                 if text == "/start":
+                    user = update.message.from_user
+                    first_name = getattr(user, 'first_name', '') or ""
+                    last_name = getattr(user, 'last_name', '') or ""
+                    username = f"@{getattr(user, 'username', '')}" if getattr(user, 'username', '') else "(tanpa username)"
+                    full_name = f"{first_name} {last_name}".strip()
+
                     if chat_id not in registered_pics_ids:
                         registered_pics_ids.append(chat_id)
                         await save_registered_pics()
@@ -153,8 +178,30 @@ async def handle_updates(bot: Bot):
                             text="✅ *AwarenixBot aktif*\\. Anda akan menerima alert status API\\.",
                             parse_mode="MarkdownV2"
                         )
+
+                        # Kirim notifikasi ke admin (chat_id admin = 2020661886)
+                        admin_chat_id = 2020661886
+                        message = (
+                            f"👤 *PIC Baru Terdaftar*\n"
+                            f"📅 Waktu: *{get_jakarta_time()}*\n"
+                            f"🆔 Chat ID: `{chat_id}`\n"
+                            f"👨 Nama: *{escape_markdown_v2(full_name)}*\n"
+                            f"🔗 Username: {escape_markdown_v2(username)}"
+                        )
+                        await bot.send_message(
+                            chat_id=admin_chat_id,
+                            text=message,
+                            parse_mode="MarkdownV2"
+                        )
+
+                        print(f"[{get_jakarta_time()}] New user registered: {full_name} ({username}) | Chat ID: {chat_id}")
+
                     else:
-                        await bot.send_message(chat_id=chat_id, text="Anda sudah terdaftar menerima alert.")
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text="Anda sudah terdaftar menerima alert.",
+                            parse_mode="MarkdownV2"
+                        )
 
                 elif text == "/stop":
                     if chat_id in registered_pics_ids:
@@ -168,6 +215,23 @@ async def handle_updates(bot: Bot):
                     else:
                         await bot.send_message(chat_id=chat_id, text="Anda belum terdaftar untuk alert.")
 
+                elif text == "/status":
+                    now = get_jakarta_time()
+                    try:
+                        response = requests.get(API_TO_MONITOR_URL, timeout=5)
+                        code = response.status_code
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"📊 *STATUS SAAT INI*\n📡 `{escape_markdown_v2(API_TO_MONITOR_URL)}`\n📅 *{now}*\nStatus: *{code}*",
+                            parse_mode="MarkdownV2"
+                        )
+                    except Exception:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🚨 Tidak dapat menjangkau `{escape_markdown_v2(API_TO_MONITOR_URL)}` saat ini\\.",
+                            parse_mode="MarkdownV2"
+                        )
+
                 else:
                     await bot.send_message(
                         chat_id=chat_id,
@@ -176,7 +240,6 @@ async def handle_updates(bot: Bot):
                     )
 
     except TelegramError as e:
-        # Cegah crash kalau bot lain sedang polling
         if "terminated by other getUpdates request" in str(e):
             print(f"[{get_jakarta_time()}] ⚠️ Bot instance lain masih jalan — polling diabaikan sementara.")
             await asyncio.sleep(5)
