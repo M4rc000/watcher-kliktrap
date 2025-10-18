@@ -26,10 +26,10 @@ def get_jakarta_time():
 
 
 def escape_markdown_v2(text: str) -> str:
-    """Escape semua karakter spesial untuk Telegram MarkdownV2."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return ''.join(['\\' + c if c in escape_chars else c for c in text])
-
+    """Escape semua karakter spesial Telegram MarkdownV2 agar aman dikirim."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'  # karakter yang wajib di-escape
+    # Pastikan juga tanda kurung ( ) ikut di-escape
+    return ''.join(['\\' + c if c in escape_chars + '()' else c for c in text])
 
 
 # --- Simpan / Muat daftar PIC ---
