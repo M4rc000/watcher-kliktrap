@@ -5,13 +5,15 @@ import requests
 from telegram import Bot
 from telegram.error import TelegramError
 from datetime import datetime, timedelta, timezone
+import traceback
 
 # --- Konfigurasi ---
 TELEGRAM_BOT_TOKEN = '7956809240:AAFiHa-y6Gi-aIVKGa3wm92X-DZpI4Bdlxg'
 API_TO_MONITOR_URL = 'https://dashboard.kliktrap.com'
 API_CHECK_INTERVAL_SECONDS = 60
 REGISTERED_PICS_FILE = 'registered_pics.json'
-ADMIN_CHAT_ID = 2020661886  # admin untuk notifikasi tambahan
+LAST_STATE_FILE = 'last_api_status.json'
+ADMIN_CHAT_ID = 2020661886  
 
 # --- Global ---
 registered_pics_ids = []
@@ -25,13 +27,6 @@ def get_jakarta_time():
     jakarta_offset = timedelta(hours=7)
     jakarta_time = utc_now + jakarta_offset
     return jakarta_time.strftime("%d/%m/%Y %H:%M:%S WIB")
-
-
-# --- Escape MarkdownV2 ---
-def escape_markdown_v2(text: str) -> str:
-    """Escape semua karakter spesial Telegram MarkdownV2."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return ''.join(['\\' + c if c in escape_chars else c for c in text])
 
 
 # --- Load & Save PIC ---
@@ -56,25 +51,46 @@ async def save_registered_pics():
     print(f"[{get_jakarta_time()}] Saved {len(registered_pics_ids)} registered PICs.")
 
 
+# --- Load & Save Last State ---
+def load_last_state():
+    global last_api_state
+    if os.path.exists(LAST_STATE_FILE):
+        try:
+            with open(LAST_STATE_FILE, 'r') as f:
+                data = json.load(f)
+                last_api_state = "DOWN" if data.get("is_down") else "UP"
+            print(f"[{get_jakarta_time()}] Loaded last_api_state = {last_api_state}")
+        except Exception as e:
+            print(f"[{get_jakarta_time()}] Failed to load last state: {e}")
+            last_api_state = None
+    else:
+        last_api_state = None
+
+
+def save_last_state():
+    data = {"is_down": True if last_api_state == "DOWN" else False}
+    with open(LAST_STATE_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+    print(f"[{get_jakarta_time()}] Saved last_api_state = {last_api_state}")
+
+
 # --- Kirim Pesan ---
 async def send_alert_to_pics(bot: Bot, message: str):
-    """Mengirim alert ke semua PIC dan log error bila gagal."""
     if not registered_pics_ids:
         print(f"[{get_jakarta_time()}] No PICs registered.")
         return
 
     for chat_id in registered_pics_ids[:]:
         try:
-            await bot.send_message(chat_id=chat_id, text=message, parse_mode='MarkdownV2')
+            await bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
             print(f"[{get_jakarta_time()}] Alert sent to {chat_id}")
         except TelegramError as e:
             print(f"[{get_jakarta_time()}] Error sending to {chat_id}: {e}")
-            # Laporkan ke admin jika gagal kirim pesan
             try:
                 await bot.send_message(
                     chat_id=ADMIN_CHAT_ID,
-                    text=f"⚠️ Gagal mengirim pesan ke chat ID `{chat_id}`: `{escape_markdown_v2(str(e))}`",
-                    parse_mode="MarkdownV2"
+                    text=f"⚠️ Gagal kirim pesan ke <code>{chat_id}</code>: <code>{str(e)}</code>",
+                    parse_mode="HTML"
                 )
             except Exception as e2:
                 print(f"[{get_jakarta_time()}] Failed to notify admin: {e2}")
@@ -86,7 +102,6 @@ async def send_alert_to_pics(bot: Bot, message: str):
 # --- Cek API ---
 async def check_api_status(bot: Bot):
     global last_api_state
-    escaped_url = escape_markdown_v2(API_TO_MONITOR_URL)
     now = get_jakarta_time()
 
     print(f"[{now}] [APICheckLoop] Checking API {API_TO_MONITOR_URL}...")
@@ -97,61 +112,64 @@ async def check_api_status(bot: Bot):
     try:
         response = requests.get(API_TO_MONITOR_URL, timeout=5)
         code = response.status_code
+        text = response.text.lower().strip()
 
-        if code != 200:
+        if code != 200 or any(err in text for err in ["error", "502", "503", "bad gateway", "not found"]):
             current_state = "DOWN"
-            if code == 503:
-                reason = f"Service not running \\(status *503 Service Unavailable*\\)"
-            elif code == 404:
-                reason = f"VM Offline \\(status *404 Not Found*\\)"
-            else:
-                reason = f"Unknown: *{code}*"
+            reason = f"Status code {code} or bad content detected"
     except requests.exceptions.ConnectionError:
         current_state = "DOWN"
-        reason = "Can't accessed \\(Possible Offline VM\\)"
+        reason = "Can't access (Possible Offline VM)"
     except requests.exceptions.Timeout:
         current_state = "DOWN"
         reason = "Timeout — server not responding"
     except Exception as e:
         current_state = "DOWN"
-        reason = f"Unexpected error: `{escape_markdown_v2(str(e))}`"
+        reason = f"Unexpected error: {e}"
 
-    # Debug log
     print(f"[{now}] DEBUG: last_api_state={last_api_state}, current_state={current_state}")
 
-    # --- Kirim notifikasi hanya saat ada perubahan status ---
+    # === Logika pengiriman notifikasi ===
     if last_api_state is None:
         last_api_state = current_state
         msg = (
-            f"🟢 *AwarenixBot Active*\n\n"
-            f"📡 URL: `{escaped_url}`\n"
-            f"📅 Time: *{now}*\n"
-            f"📈 Initial status: *{reason}*"
+            f"🟢 <b>AwarenixBot Active</b>\n\n\n"
+            f"📡 URL: <code>{API_TO_MONITOR_URL}</code>\n\n"
+            f"📅 Time: <b>{now}</b>\n\n"
+            f"📈 Initial status: <b>{reason}</b>"
         )
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="MarkdownV2")
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="HTML")
 
     elif last_api_state == "UP" and current_state == "DOWN":
         msg = (
-            f"🚨 *ALERT: SERVICE DOWN*\n\n"
-            f"📡 URL: `{escaped_url}`\n"
-            f"📅 Time: *{now}*\n"
-            f"💥 Condition: *{reason}*\n"
+            f"🚨 <b>ALERT: SERVICE DOWN</b>\n\n\n"
+            f"📡 URL: <code>{API_TO_MONITOR_URL}</code>\n\n"
+            f"📅 Time: <b>{now}</b>\n\n"
+            f"💥 Condition: <b>{reason}</b>\n\n"
             f"⚠️ Please check the server or VM."
         )
         await send_alert_to_pics(bot, msg)
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📣 Status berubah: *UP → DOWN*\n{msg}", parse_mode="MarkdownV2")
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"📣 <b>Status berubah: UP → DOWN</b>\n\n{msg}",
+            parse_mode="HTML"
+        )
         last_api_state = "DOWN"
 
     elif last_api_state == "DOWN" and current_state == "UP":
         msg = (
-            f"✅ *SERVICE RUNNING*\n\n"
-            f"📡 URL: `{escaped_url}`\n"
-            f"📅 Time: *{now}*\n"
-            f"💚 Condition: *{reason}*\n"
+            f"✅ <b>SERVICE RUNNING</b>\n\n\n"
+            f"📡 URL: <code>{API_TO_MONITOR_URL}</code>\n\n"
+            f"📅 Time: <b>{now}</b>\n\n"
+            f"💚 Condition: <b>{reason}</b>\n\n"
             f"System is running well."
         )
         await send_alert_to_pics(bot, msg)
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📣 Status berubah: *DOWN → UP*\n{msg}", parse_mode="MarkdownV2")
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"📣 <b>Status berubah: DOWN → UP</b>\n\n{msg}",
+            parse_mode="HTML"
+        )
         last_api_state = "UP"
 
     else:
@@ -187,18 +205,17 @@ async def handle_updates(bot: Bot):
                         await save_registered_pics()
                         await bot.send_message(
                             chat_id=chat_id,
-                            text="✅ *AwarenixBot aktif*\\. Anda akan menerima alert status API\\.",
-                            parse_mode="MarkdownV2"
+                            text="✅ <b>AwarenixBot aktif</b>. Anda akan menerima alert status API.",
+                            parse_mode="HTML"
                         )
-                        # Notifikasi ke admin
                         msg = (
-                            f"👤 *PIC Baru Terdaftar*\n"
-                            f"📅 Waktu: *{get_jakarta_time()}*\n"
-                            f"🆔 Chat ID: `{chat_id}`\n"
-                            f"👨 Nama: *{escape_markdown_v2(full_name)}*\n"
-                            f"🔗 Username: {escape_markdown_v2(username)}"
+                            f"👤 <b>PIC Baru Terdaftar</b>\n"
+                            f"📅 Waktu: <b>{get_jakarta_time()}</b>\n"
+                            f"🆔 Chat ID: <code>{chat_id}</code>\n"
+                            f"👨 Nama: <b>{full_name}</b>\n"
+                            f"🔗 Username: {username}"
                         )
-                        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="MarkdownV2")
+                        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="HTML")
 
                 elif text == "/stop":
                     if chat_id in registered_pics_ids:
@@ -206,8 +223,8 @@ async def handle_updates(bot: Bot):
                         await save_registered_pics()
                         await bot.send_message(
                             chat_id=chat_id,
-                            text="🛑 Anda telah berhenti menerima alert dari *AwarenixBot*\\.",
-                            parse_mode="MarkdownV2"
+                            text="🛑 Anda telah berhenti menerima alert dari <b>AwarenixBot</b>.",
+                            parse_mode="HTML"
                         )
                     else:
                         await bot.send_message(chat_id=chat_id, text="Anda belum terdaftar untuk alert.")
@@ -219,14 +236,14 @@ async def handle_updates(bot: Bot):
                         code = response.status_code
                         await bot.send_message(
                             chat_id=chat_id,
-                            text=f"📊 *STATUS SAAT INI*\n📡 `{escape_markdown_v2(API_TO_MONITOR_URL)}`\n📅 *{now}*\nStatus: *{code}*",
-                            parse_mode="MarkdownV2"
+                            text=f"📊 <b>STATUS SAAT INI</b>\n📡 <code>{API_TO_MONITOR_URL}</code>\n📅 <b>{now}</b>\nStatus: <b>{code}</b>",
+                            parse_mode="HTML"
                         )
                     except Exception:
                         await bot.send_message(
                             chat_id=chat_id,
-                            text=f"🚨 Tidak dapat menjangkau `{escape_markdown_v2(API_TO_MONITOR_URL)}` saat ini\\.",
-                            parse_mode="MarkdownV2"
+                            text=f"🚨 Tidak dapat menjangkau <code>{API_TO_MONITOR_URL}</code> saat ini.",
+                            parse_mode="HTML"
                         )
 
     except TelegramError as e:
@@ -235,12 +252,15 @@ async def handle_updates(bot: Bot):
             await asyncio.sleep(5)
         else:
             print(f"[{get_jakarta_time()}] Telegram error: {e}")
+    except Exception as e:
+        print(f"[{get_jakarta_time()}] Unexpected error in handle_updates: {traceback.format_exc()}")
 
 
 # --- Main Bot ---
 async def main():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     await load_registered_pics()
+    load_last_state()
 
     async def loop_updates():
         while True:
@@ -249,7 +269,11 @@ async def main():
 
     async def loop_api():
         while True:
-            await check_api_status(bot)
+            try:
+                await check_api_status(bot)
+            except Exception:
+                print(f"[{get_jakarta_time()}] Error in check_api_status: {traceback.format_exc()}")
+            print(f"[{get_jakarta_time()}] Loop alive — next check in {API_CHECK_INTERVAL_SECONDS}s")
             await asyncio.sleep(API_CHECK_INTERVAL_SECONDS)
 
     await asyncio.gather(
