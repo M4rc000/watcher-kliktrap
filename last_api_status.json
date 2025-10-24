@@ -1,3 +1,5 @@
 {
-    "is_down": true
+    "status": "up",
+    "date": "24/10/2025 16:07:55 WIB",
+    "message": "Service is operational"
 }

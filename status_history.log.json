@@ -1,0 +1,27 @@
+[
+    {
+        "status": "up",
+        "date": "24/10/2025 15:41:39 WIB",
+        "message": "Service normal"
+    },
+    {
+        "status": "down",
+        "date": "24/10/2025 15:52:50 WIB",
+        "message": "Status code 503 or bad content detected"
+    },
+    {
+        "status": "up",
+        "date": "24/10/2025 15:56:53 WIB",
+        "message": "Service normal"
+    },
+    {
+        "status": "down",
+        "date": "24/10/2025 16:03:47 WIB",
+        "message": "HTTP 503 - Bad response detected"
+    },
+    {
+        "status": "up",
+        "date": "24/10/2025 16:07:55 WIB",
+        "message": "Service is operational"
+    }
+]
