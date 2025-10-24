@@ -381,6 +381,43 @@ async def handle_updates(bot: Bot):
                         parse_mode="HTML"
                     )
 
+                elif text == "/status":
+                    msg = (
+                        f"📊 <b>Status History</b>\n\n"
+                        f"<b>Last 5 Status Changes:</b>\n\n"
+                    )
+                    if not os.path.exists(HISTORY_LOG_FILE):
+                        msg += f"No history available yet.\n"
+                    else:
+                        try:
+                            with open(HISTORY_LOG_FILE, 'r') as f:
+                                history = json.load(f)
+                            if not history or not isinstance(history, list):
+                                msg += f"History file is empty.\n"
+                            else:
+                                last_5_entries = history[-5:]
+                                last_5_entries.reverse()
+                                
+                                for idx, item in enumerate(last_5_entries, 1):
+                                    status_icon = "✅" if item.get('status') == 'up' else '🚨'
+                                    date = item.get('date', 'N/A')
+                                    reason = item.get('message', 'N/A')
+                                    status_text = item.get('status', 'N/A').upper()
+                                    
+                                    msg += f"{status_icon} <b>#{idx} - {status_text}</b>\n"
+                                    msg += f"🕒 {date}\n"
+                                    msg += f"📝 <i>{reason}</i>\n\n"
+                                
+                                    
+                        except Exception as e:
+                            msg += f"❌ Failed to read history file\n\n{e}\n"
+                    
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg + get_command_list(),
+                        parse_mode="HTML"
+                    )
+
                 elif text == "/checknow":
                     now = get_jakarta_time()
                     check_msg = (
@@ -389,18 +426,51 @@ async def handle_updates(bot: Bot):
                     try:
                         response = requests.get(API_TO_MONITOR_URL, timeout=5)
                         code = response.status_code
-                        status_icon = "✅" if code == 200 else "⚠️"
+                        
+                        # Determine status icon and description
+                        if code == 200:
+                            status_icon = "✅"
+                            status_desc = "Service is running normally"
+                        elif code == 404:
+                            status_icon = "🔴"
+                            status_desc = "VM Offline"
+                        elif code == 503:
+                            status_icon = "⚠️"
+                            status_desc = "Service not running yet"
+                        else:
+                            status_icon = "⚠️"
+                            status_desc = f"HTTP Error {code}"
+                        
                         check_msg += (
                             f"🌐 <b>URL:</b>\n<code>{API_TO_MONITOR_URL}</code>\n\n"
                             f"📅 <b>Checked:</b> {now}\n"
                             f"{status_icon} <b>HTTP Status:</b> {code}\n"
+                            f"📝 <b>Description:</b> {status_desc}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                    except requests.exceptions.ConnectionError:
+                        check_msg += (
+                            f"🌐 <b>URL:</b>\n<code>{API_TO_MONITOR_URL}</code>\n\n"
+                            f"📅 <b>Checked:</b> {now}\n"
+                            f"❌ <b>Status:</b> Unable to reach server\n"
+                            f"📝 <b>Description:</b> Connection failed - Server may be offline\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                    except requests.exceptions.Timeout:
+                        check_msg += (
+                            f"🌐 <b>URL:</b>\n<code>{API_TO_MONITOR_URL}</code>\n\n"
+                            f"📅 <b>Checked:</b> {now}\n"
+                            f"❌ <b>Status:</b> Unable to reach server\n"
+                            f"📝 <b>Description:</b> Request timeout - Server not responding\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━"
                         )
                     except Exception as e:
                         check_msg += (
                             f"🌐 <b>URL:</b>\n<code>{API_TO_MONITOR_URL}</code>\n\n"
                             f"📅 <b>Checked:</b> {now}\n"
-                            f"❌ <b>Error:</b> Unable to reach server\n\n"
-                            f"<i>{str(e)}</i>\n"
+                            f"❌ <b>Status:</b> Unable to reach server\n"
+                            f"📝 <b>Error:</b> <i>{str(e)}</i>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━"
                         )
                     
                     await bot.send_message(
@@ -408,7 +478,6 @@ async def handle_updates(bot: Bot):
                         text=check_msg + get_command_list(),
                         parse_mode="HTML"
                     )
-
     except TelegramError as e:
         if "terminated by other getUpdates request" in str(e):
             print(f"[{get_jakarta_time()}] ⚠️ Bot instance lain masih jalan — polling diabaikan sementara.")
